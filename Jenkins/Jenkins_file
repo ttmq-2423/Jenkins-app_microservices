@@ -1,0 +1,95 @@
+pipeline {
+    agent any
+
+    environment {
+        SONAR_HOST_URL = "http://100.25.243.240:9000"
+        SONAR_TOKEN = "sqa_4b94120c8c3b0eee026a43e1b93a460e77eb4f4b"
+        KUBERNETES_YAML_DIR = "k8s/"
+    }
+
+    stages {
+        stage('Checkout Source Code') {
+            steps {
+                git 'https://github.com/ttmq-2423/lab2_app_microsevices.git'
+            }
+        }
+        stage('Trivy Source Code Scan') {
+            steps {
+                sh '''
+                mkdir -p report_trivy
+                trivy fs . --severity HIGH,CRITICAL --output report_trivy/source_scan.txt || true
+                '''
+            }
+        }
+        stage('SonarQube Code Analysis') {
+            steps {
+                script {
+                    withSonarQubeEnv('SonarQube') {
+                        sh '''
+                        sonar-scanner \
+                        -Dsonar.projectKey="Nhom10_Quynh_Mai_Khiem" \
+                        -Dsonar.sources=. \
+                        -Dsonar.host.url=$SONAR_HOST_URL \
+                        -Dsonar.login=$SONAR_TOKEN
+                        '''
+                    }
+                }
+            }
+        }
+        stage('Build Docker Images') {
+            steps {
+                script {
+                    sh 'docker-compose build'
+                }
+            }
+        }
+        stage('Trivy Scan All Docker Images') {
+            steps {
+                script {
+                    sh '''
+                    mkdir -p report_trivy
+                    docker-compose config | grep 'image:' | awk '{print $2}' > report_trivy/images.txt
+                    '''
+
+                    sh '''
+                    while read image; do
+                        echo "Scanning $image..."
+                        trivy image $image --severity HIGH,CRITICAL --output report_trivy/${image//[:/]/_}_scan.txt || true
+                    done < report_trivy/images.txt
+                    '''
+                }
+            }
+        }
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    withCredentials([file(credentialsId: 'mykubeconfig-2', variable: 'KUBECRED')]) {
+                        sh 'cat $KUBECRED > ~/.kube/config'
+                        sh 'kubectl apply -R -f $KUBERNETES_YAML_DIR'
+                    }
+                }
+            }
+        }
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    sh '''
+                    kubectl get pods
+                    kubectl get services
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        always {
+            echo 'Pipeline execution completed.'
+        }
+        success {
+            echo 'Build and deployment successful!'
+        }
+        failure {
+            echo 'Build or deployment failed.'
+        }
+    }
+}
